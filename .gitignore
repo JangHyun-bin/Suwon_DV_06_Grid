@@ -1,0 +1,9 @@
+# Ignore everything at the root
+/*
+
+# Keep the .gitignore file
+!/.gitignore
+
+# Keep only these two scripts
+!/Suwon_GridProcess.py
+!/Suwon_Image_Crawl.py 
