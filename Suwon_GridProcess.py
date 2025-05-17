@@ -2,7 +2,7 @@ import os
 import glob
 import math
 import random
-from typing import Tuple, List
+from typing import Tuple, List, Union
 
 from PIL import Image, ImageDraw
 import numpy as np
@@ -36,7 +36,7 @@ class TorchFeedback:
         
         # 효과 설정
         self.vignette_strength = 0.3  # 비네팅 강도
-        self.noise_amount = 0.3      # 노이즈 강도
+        self.noise_amount = 0.6      # 노이즈 강도
         # color_tint removed to maintain greyscale
         
         # 비네팅 마스크 생성
@@ -82,12 +82,12 @@ class ImageSpawner:
         canvas_size: Tuple[int, int],
         scale_range: Tuple[float, float] = (0.2, 0.8),
         fade_range: Tuple[float, float] = (0.03, 0.12),  # 페이드 속도 범위 추가
-        pixelate_size: int = None  # 픽셀화 강도 (None 이면 비활성)
+        pixelate_size: Union[int, Tuple[int, int]] = None  # 픽셀화 강도 또는 범위 (None 이면 비활성)
     ):
         self.canvas_w, self.canvas_h = canvas_size
         self.scale_range = scale_range
         self.fade_range = fade_range  # 페이드 속도 범위 저장
-        self.pixelate_size = pixelate_size  # 픽셀화 강도 저장
+        self.pixelate_size = pixelate_size  # 픽셀화 강도 또는 범위 저장
         self.spawn_queue = []  # 나중에 스폰될 이미지들을 위한 큐 추가
 
         # 원본 PIL 그레이 이미지 로드
@@ -109,10 +109,15 @@ class ImageSpawner:
         new_w = max(1, int(orig_w * scale))
         new_h = max(1, int(orig_h * scale))
         pil_resized = pil.resize((new_w, new_h), resample=Image.LANCZOS)
-        # 픽셀화 적용 (nearest neighbor 축소-확대)
-        if self.pixelate_size and self.pixelate_size > 1:
-            small_w = max(1, new_w // self.pixelate_size)
-            small_h = max(1, new_h // self.pixelate_size)
+        # 픽셀화 적용: pixelate_size가 정수면 고정, tuple이면 범위 내 랜덤
+        pixel_n = None
+        if isinstance(self.pixelate_size, (tuple, list)):
+            pixel_n = random.randint(self.pixelate_size[0], self.pixelate_size[1])
+        else:
+            pixel_n = self.pixelate_size
+        if pixel_n and pixel_n > 1:
+            small_w = max(1, new_w // pixel_n)
+            small_h = max(1, new_h // pixel_n)
             pil_resized = pil_resized.resize((small_w, small_h), resample=Image.NEAREST)
             pil_resized = pil_resized.resize((new_w, new_h), resample=Image.NEAREST)
 
@@ -388,14 +393,33 @@ class VideoGenerator:
         bg_tensor = torch.tensor(bg_color).float() / 255.0
         self.base_canvas = bg_tensor.view(1, 3, 1, 1).repeat(1, 1, *kwargs.get("canvas_size", (2048,2048))).to(DEVICE)
 
-        # perspective transform initialization for 2.5D effect
+        # perspective transform initialization for 2.5D effect with adjustable trapezoid height
         self.use_3d = kwargs.get("use_3d", False)
         if self.use_3d:
             h, w = kwargs.get("canvas_size", (2048,2048))
             alpha = kwargs.get("perspective_alpha", 0.2)
+            # vertical offset factor for trapezoid top (0: at top, 1: at bottom)
+            beta = kwargs.get("perspective_vertical", 0.7)
+            # source corners: full rectangle
             src = np.float32([[0,0],[w,0],[w,h],[0,h]])
-            dst = np.float32([[w*alpha,0],[w*(1-alpha),0],[w,h],[0,h]])
+            # destination corners: top corners moved to y = h * beta
+            dst = np.float32([
+                [w*alpha, h*beta],        # top-left
+                [w*(1-alpha), h*beta],    # top-right
+                [w, h],                   # bottom-right
+                [0, h]                    # bottom-left
+            ])
             self.persp_M = cv2.getPerspectiveTransform(src, dst)
+        # fluid motion effect parameters
+        self.use_fluid = kwargs.get("use_fluid", False)
+        if self.use_fluid:
+            h, w = kwargs.get("canvas_size", (2048,2048))
+            self.fluid_strength = kwargs.get("fluid_strength", 20.0)
+            self.fluid_scale = kwargs.get("fluid_scale", 0.02)
+            # base coordinate grid for remap
+            self.base_map_x, self.base_map_y = np.meshgrid(
+                np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32)
+            )
 
         self.num_frames = kwargs.get("num_frames", 300)
         self.interval   = kwargs.get("interval", 8)
@@ -422,18 +446,31 @@ class VideoGenerator:
             canvas = torch.from_numpy(arr).permute(2,0,1).unsqueeze(0).to(DEVICE)
 
             out = self.feedback.apply(canvas)
-
-            # apply perspective warp for 2.5D effect
+            # convert to numpy image
             frame_np = (out[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+            # apply fluid warp for smooth motion
+            if self.use_fluid:
+                h, w = frame_np.shape[:2]
+                # generate and smooth random noise fields
+                noise_x = np.random.rand(h, w).astype(np.float32) * 2 - 1
+                noise_y = np.random.rand(h, w).astype(np.float32) * 2 - 1
+                sigma = self.fluid_scale * max(h, w)
+                noise_x = cv2.GaussianBlur(noise_x, (0,0), sigmaX=sigma)
+                noise_y = cv2.GaussianBlur(noise_y, (0,0), sigmaX=sigma)
+                # create remap coordinates
+                map_x = (self.base_map_x + noise_x * self.fluid_strength).astype(np.float32)
+                map_y = (self.base_map_y + noise_y * self.fluid_strength).astype(np.float32)
+                frame_np = cv2.remap(
+                    frame_np, map_x, map_y,
+                    interpolation=cv2.INTER_LINEAR,
+                    borderMode=cv2.BORDER_REFLECT
+                )
+            # apply perspective warp for 2.5D effect if enabled
             if self.use_3d:
                 h, w = frame_np.shape[:2]
-                warped = cv2.warpPerspective(frame_np, self.persp_M, (w, h))
-                Image.fromarray(warped).save(os.path.join(self.output, f"frame_{i:04d}.png"))
-                continue
-
-            # 파일 저장
-            frame = (out[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
-            Image.fromarray(frame).save(os.path.join(self.output, f"frame_{i:04d}.png"))
+                frame_np = cv2.warpPerspective(frame_np, self.persp_M, (w, h))
+            # save final frame
+            Image.fromarray(frame_np).save(os.path.join(self.output, f"frame_{i:04d}.png"))
             print(f"[{i+1}/{self.num_frames}] Saved frame_{i:04d}.png")
         print("Done.")
 
@@ -451,6 +488,7 @@ if __name__ == "__main__":
         visual_style="modern_grid",     # 시각적 스타일 ('modern_grid' 또는 'green_data')
         enable_effects=True,            # 시각적 효과 활성화
         bg_color=(20, 20, 22),          # 배경색 (어두운 색상)
-        pixelate_size=8                # 픽셀화 강도 (예: 8으로 설정해서 8x8 블록 픽셀화)
+        pixelate_size=(4, 16),          # 픽셀화 강도 범위 (각 이미지별 랜덤 픽셀화 강도)
+        perspective_vertical=0.5        # 프로젝션 수직 오프셋 (0: 위, 1: 아래)
     )
     gen.run()
