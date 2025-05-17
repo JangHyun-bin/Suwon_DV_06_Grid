@@ -25,15 +25,52 @@ def generate_perlin(h: int, w: int, scale: float) -> np.ndarray:
 
 class TorchFeedback:
     """
-    A simple feedback processor that currently returns the canvas unchanged.
+    Enhanced feedback processor that can add various visual effects.
     """
-    def __init__(self, size: Tuple[int, int]):
-        # Store canvas size for future use if needed
+    def __init__(self, size: Tuple[int, int], enable_effects: bool = True):
+        # Store canvas size for future use
         self.canvas_size = size
-
+        self.enable_effects = enable_effects
+        self.frame_count = 0
+        
+        # 효과 설정
+        self.vignette_strength = 0.3  # 비네팅 강도
+        self.noise_amount = 0.03      # 노이즈 강도
+        # color_tint removed to maintain greyscale
+        
+        # 비네팅 마스크 생성
+        h, w = size
+        y, x = torch.meshgrid(
+            torch.linspace(-1, 1, h),
+            torch.linspace(-1, 1, w)
+        )
+        self.vignette = (x.pow(2) + y.pow(2)).sqrt().pow(0.7)  # 약간 완만하게
+        self.vignette = self.vignette.clamp(0, 1).view(1, 1, h, w)
+        # feedback loop accumulator for long-exposure effect
+        self.feedback_decay = 0.2 # decay factor: closer to 1 => longer trails
+        self.accumulator = torch.zeros(1, 3, h, w, device=DEVICE)
+    
     def apply(self, canvas: torch.Tensor) -> torch.Tensor:
-        # No feedback effect applied; just return the original canvas
-        return canvas
+        self.frame_count += 1
+        
+        if not self.enable_effects:
+            return canvas
+            
+        # 원본 캔버스 복사
+        out = canvas.clone()
+        
+        # 비네팅 효과 적용 (중앙은 밝게, 가장자리는 어둡게)
+        vignette_mask = (1.0 - self.vignette * self.vignette_strength).to(out.device)
+        out = out * vignette_mask
+        
+        # 랜덤 노이즈 추가 (약간의 거친 텍스처)
+        if self.noise_amount > 0:
+            noise = torch.randn_like(out) * self.noise_amount
+            out = (out + noise).clamp(0, 1)
+            
+        # feedback loop: accumulate frames for long-exposure effect
+        self.accumulator = self.accumulator * self.feedback_decay + out * (1 - self.feedback_decay)
+        return self.accumulator
 
 
 class ImageSpawner:
@@ -185,14 +222,62 @@ class LineConnector:
     Draws lines connecting texture centers on the canvas and marks each center.
     Lines are drawn only as horizontal and vertical segments (90-degree angles).
     """
-    def __init__(self, color: Tuple[int, int, int] = (255, 255, 255), width: int = 2):
+    def __init__(
+        self, 
+        color: Tuple[int, int, int] = (255, 255, 255), 
+        width: int = 2,
+        highlight_color: Tuple[int, int, int] = (255, 50, 50),  # 하이라이트 색상 (빨간색)
+        grid_color: Tuple[int, int, int] = (180, 180, 180),     # 그리드 색상 (회색)
+        show_grid: bool = True,                                 # 배경 그리드 표시 여부
+        grid_spacing: int = 64,                                 # 그리드 간격
+        grid_opacity: float = 0.15                              # 그리드 투명도
+    ):
         self.color = color
         self.width = width
+        self.highlight_color = highlight_color
+        self.grid_color = grid_color
+        self.show_grid = show_grid
+        self.grid_spacing = grid_spacing
+        self.grid_opacity = grid_opacity
+        self.highlight_points = []  # 하이라이트할 특별 포인트
+
+    def set_random_highlights(self, centers: List[Tuple[int, int]], count: int = 2):
+        """랜덤하게 하이라이트할 포인트 선택"""
+        if centers and count > 0:
+            count = min(count, len(centers))
+            self.highlight_points = random.sample(centers, count)
+        else:
+            self.highlight_points = []
+
+    def draw_grid(self, image: Image.Image, canvas_size: Tuple[int, int]):
+        """배경 그리드 그리기"""
+        if not self.show_grid:
+            return
+            
+        draw = ImageDraw.Draw(image, 'RGBA')  # RGBA 모드로 그리기
+        w, h = canvas_size
+        
+        # 수직선
+        for x in range(0, w, self.grid_spacing):
+            alpha = int(255 * self.grid_opacity)
+            draw.line([(x, 0), (x, h)], fill=self.grid_color + (alpha,), width=1)
+            
+        # 수평선
+        for y in range(0, h, self.grid_spacing):
+            alpha = int(255 * self.grid_opacity)
+            draw.line([(0, y), (w, y)], fill=self.grid_color + (alpha,), width=1)
 
     def draw(self, image: Image.Image, centers: List[Tuple[int, int]]) -> None:
         # 최소 두 개의 점이 있을 때만 처리
         if len(centers) < 2:
             return
+            
+        # 배경 그리드 그리기
+        self.draw_grid(image, image.size)
+        
+        # 랜덤 하이라이트 포인트 설정 (필요하면)
+        if not self.highlight_points:
+            self.set_random_highlights(centers)
             
         draw = ImageDraw.Draw(image)
         
@@ -201,30 +286,55 @@ class LineConnector:
             p1 = centers[i]
             p2 = centers[i + 1]
             
-            # 두 점 사이의 "ㄱ" 또는 "ㄴ" 형태로 연결
-            # (x1, y1) -> (x2, y1) -> (x2, y2) 또는
-            # (x1, y1) -> (x1, y2) -> (x2, y2)
+            # 선 색상 - 하이라이트 점이면 강조 색상, 아니면 기본 색상
+            line_color = self.highlight_color if (p1 in self.highlight_points or p2 in self.highlight_points) else self.color
+            line_width = self.width + 1 if (p1 in self.highlight_points or p2 in self.highlight_points) else self.width
             
-            # 랜덤하게 경로 결정 (수직 먼저 또는 수평 먼저)
+            # 두 점 사이의 "ㄱ" 또는 "ㄴ" 형태로 연결
             if random.choice([True, False]):
                 # 수평 선분 먼저, 그 다음 수직 선분
                 mid_point = (p2[0], p1[1])  # (x2, y1)
-                draw.line([p1, mid_point], fill=self.color, width=self.width)
-                draw.line([mid_point, p2], fill=self.color, width=self.width)
+                draw.line([p1, mid_point], fill=line_color, width=line_width)
+                draw.line([mid_point, p2], fill=line_color, width=line_width)
+                
+                # 교차점에 작은 점 추가
+                if random.random() < 0.7:  # 70% 확률로 교차점 강조
+                    r = max(1, line_width//2)
+                    draw.ellipse([mid_point[0]-r, mid_point[1]-r, mid_point[0]+r, mid_point[1]+r], fill=line_color)
             else:
                 # 수직 선분 먼저, 그 다음 수평 선분
                 mid_point = (p1[0], p2[1])  # (x1, y2)
-                draw.line([p1, mid_point], fill=self.color, width=self.width)
-                draw.line([mid_point, p2], fill=self.color, width=self.width)
+                draw.line([p1, mid_point], fill=line_color, width=line_width)
+                draw.line([mid_point, p2], fill=line_color, width=line_width)
+                
+                # 교차점에 작은 점 추가
+                if random.random() < 0.7:  # 70% 확률로 교차점 강조
+                    r = max(1, line_width//2)
+                    draw.ellipse([mid_point[0]-r, mid_point[1]-r, mid_point[0]+r, mid_point[1]+r], fill=line_color)
         
-        # 각 중심점에 작은 원 표시
-        radius = self.width
+        # 각 중심점에 원 표시
         for x, y in centers:
-            draw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=self.color)
+            # 하이라이트 포인트인지 확인
+            is_highlight = (x, y) in self.highlight_points
+            point_color = self.highlight_color if is_highlight else self.color
+            radius = self.width * 2 if is_highlight else self.width
+            
+            # 중심점 표시
+            draw.ellipse([x-radius, y-radius, x+radius, y+radius], fill=point_color)
+            
+            # 하이라이트 포인트에는 추가 효과
+            if is_highlight:
+                # 외부 원 추가
+                outer_radius = radius * 2
+                draw.ellipse(
+                    [x-outer_radius, y-outer_radius, x+outer_radius, y+outer_radius], 
+                    outline=point_color,
+                    width=2
+                )
 
 
 class VideoGenerator:
-    """전체 프레임 생성 및 저장을 담당 (변동 없음)"""
+    """전체 프레임 생성 및 저장을 담당"""
     def __init__(self, image_folder: str, output_folder: str = "output_frames", **kwargs):
         paths = glob.glob(os.path.join(image_folder, "*.jpg"))
         os.makedirs(output_folder, exist_ok=True)
@@ -234,9 +344,39 @@ class VideoGenerator:
             kwargs.get("canvas_size", (2048,2048)),
             fade_range=kwargs.get("fade_range", (0.03, 0.12))
         )
-        self.connector = LineConnector()
-        self.feedback  = TorchFeedback(size=kwargs.get("canvas_size", (2048,2048)))
-        self.base_canvas = torch.zeros(1, 3, *kwargs.get("canvas_size", (2048,2048)), device=DEVICE)
+        
+        # 시각적 스타일 설정
+        visual_style = kwargs.get("visual_style", "modern_grid")
+        if visual_style == "modern_grid":
+            self.connector = LineConnector(
+                color=(230, 230, 230),                # 연결선 색상 (밝은 회색)
+                width=2,                              # 선 두께
+                highlight_color=(255, 60, 60),        # 하이라이트 색상 (빨간색)
+                grid_color=(160, 160, 160),           # 그리드 색상 (어두운 회색)
+                show_grid=True,                       # 그리드 표시
+                grid_spacing=96                       # 그리드 간격
+            )
+        elif visual_style == "green_data":
+            self.connector = LineConnector(
+                color=(180, 230, 180),                # 연결선 색상 (연한 녹색)
+                width=2,                              # 선 두께
+                highlight_color=(50, 200, 50),        # 하이라이트 색상 (녹색)
+                grid_color=(120, 160, 120),           # 그리드 색상 (어두운 녹색)
+                show_grid=True,                       # 그리드 표시
+                grid_spacing=128                      # 그리드 간격
+            )
+        else:
+            self.connector = LineConnector()          # 기본 스타일
+        
+        self.feedback = TorchFeedback(
+            size=kwargs.get("canvas_size", (2048,2048)),
+            enable_effects=kwargs.get("enable_effects", True)
+        )
+        
+        # 배경 색상 설정 (약간 어두운 회색 배경)
+        bg_color = kwargs.get("bg_color", (30, 30, 30))
+        bg_tensor = torch.tensor(bg_color).float() / 255.0
+        self.base_canvas = bg_tensor.view(1, 3, 1, 1).repeat(1, 1, *kwargs.get("canvas_size", (2048,2048))).to(DEVICE)
 
         self.num_frames = kwargs.get("num_frames", 300)
         self.interval   = kwargs.get("interval", 8)
@@ -279,6 +419,9 @@ if __name__ == "__main__":
         num_frames=300,
         interval=8,
         per_spawn=60,
-        fade_range=(0.03, 0.12)  # 페이드 속도 범위 추가
+        fade_range=(0.03, 0.12),       # 페이드 속도 범위
+        visual_style="modern_grid",     # 시각적 스타일 ('modern_grid' 또는 'green_data')
+        enable_effects=True,            # 시각적 효과 활성화
+        bg_color=(20, 20, 22)           # 배경색 (어두운 색상)
     )
     gen.run()
