@@ -82,10 +82,12 @@ class ImageSpawner:
         canvas_size: Tuple[int, int],
         scale_range: Tuple[float, float] = (0.2, 0.8),
         fade_range: Tuple[float, float] = (0.03, 0.12),  # 페이드 속도 범위 추가
+        pixelate_size: int = None  # 픽셀화 강도 (None 이면 비활성)
     ):
         self.canvas_w, self.canvas_h = canvas_size
         self.scale_range = scale_range
         self.fade_range = fade_range  # 페이드 속도 범위 저장
+        self.pixelate_size = pixelate_size  # 픽셀화 강도 저장
         self.spawn_queue = []  # 나중에 스폰될 이미지들을 위한 큐 추가
 
         # 원본 PIL 그레이 이미지 로드
@@ -107,6 +109,12 @@ class ImageSpawner:
         new_w = max(1, int(orig_w * scale))
         new_h = max(1, int(orig_h * scale))
         pil_resized = pil.resize((new_w, new_h), resample=Image.LANCZOS)
+        # 픽셀화 적용 (nearest neighbor 축소-확대)
+        if self.pixelate_size and self.pixelate_size > 1:
+            small_w = max(1, new_w // self.pixelate_size)
+            small_h = max(1, new_h // self.pixelate_size)
+            pil_resized = pil_resized.resize((small_w, small_h), resample=Image.NEAREST)
+            pil_resized = pil_resized.resize((new_w, new_h), resample=Image.NEAREST)
 
         # NumPy → Tensor 변환 (3×H×W)
         arr = np.array(pil_resized, dtype=np.float32) / 255.0
@@ -343,7 +351,8 @@ class VideoGenerator:
         self.spawner = ImageSpawner(
             paths, 
             kwargs.get("canvas_size", (2048,2048)),
-            fade_range=kwargs.get("fade_range", (0.03, 0.12))
+            fade_range=kwargs.get("fade_range", (0.03, 0.12)),
+            pixelate_size=kwargs.get("pixelate_size", None)
         )
         
         # 시각적 스타일 설정
@@ -441,6 +450,7 @@ if __name__ == "__main__":
         fade_range=(0.03, 0.12),       # 페이드 속도 범위
         visual_style="modern_grid",     # 시각적 스타일 ('modern_grid' 또는 'green_data')
         enable_effects=True,            # 시각적 효과 활성화
-        bg_color=(20, 20, 22)           # 배경색 (어두운 색상)
+        bg_color=(20, 20, 22),          # 배경색 (어두운 색상)
+        pixelate_size=8                # 픽셀화 강도 (예: 8으로 설정해서 8x8 블록 픽셀화)
     )
     gen.run()
