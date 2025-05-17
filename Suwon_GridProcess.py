@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from noise import pnoise2
+import cv2  # for perspective transform
 
 # GPU 세팅
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -35,7 +36,7 @@ class TorchFeedback:
         
         # 효과 설정
         self.vignette_strength = 0.3  # 비네팅 강도
-        self.noise_amount = 0.03      # 노이즈 강도
+        self.noise_amount = 0.3      # 노이즈 강도
         # color_tint removed to maintain greyscale
         
         # 비네팅 마스크 생성
@@ -47,7 +48,7 @@ class TorchFeedback:
         self.vignette = (x.pow(2) + y.pow(2)).sqrt().pow(0.7)  # 약간 완만하게
         self.vignette = self.vignette.clamp(0, 1).view(1, 1, h, w)
         # feedback loop accumulator for long-exposure effect
-        self.feedback_decay = 0.2 # decay factor: closer to 1 => longer trails
+        self.feedback_decay = 0.9 # decay factor: closer to 1 => longer trails
         self.accumulator = torch.zeros(1, 3, h, w, device=DEVICE)
     
     def apply(self, canvas: torch.Tensor) -> torch.Tensor:
@@ -378,6 +379,15 @@ class VideoGenerator:
         bg_tensor = torch.tensor(bg_color).float() / 255.0
         self.base_canvas = bg_tensor.view(1, 3, 1, 1).repeat(1, 1, *kwargs.get("canvas_size", (2048,2048))).to(DEVICE)
 
+        # perspective transform initialization for 2.5D effect
+        self.use_3d = kwargs.get("use_3d", False)
+        if self.use_3d:
+            h, w = kwargs.get("canvas_size", (2048,2048))
+            alpha = kwargs.get("perspective_alpha", 0.2)
+            src = np.float32([[0,0],[w,0],[w,h],[0,h]])
+            dst = np.float32([[w*alpha,0],[w*(1-alpha),0],[w,h],[0,h]])
+            self.persp_M = cv2.getPerspectiveTransform(src, dst)
+
         self.num_frames = kwargs.get("num_frames", 300)
         self.interval   = kwargs.get("interval", 8)
         self.per_spawn  = kwargs.get("per_spawn", 60)
@@ -404,6 +414,14 @@ class VideoGenerator:
 
             out = self.feedback.apply(canvas)
 
+            # apply perspective warp for 2.5D effect
+            frame_np = (out[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+            if self.use_3d:
+                h, w = frame_np.shape[:2]
+                warped = cv2.warpPerspective(frame_np, self.persp_M, (w, h))
+                Image.fromarray(warped).save(os.path.join(self.output, f"frame_{i:04d}.png"))
+                continue
+
             # 파일 저장
             frame = (out[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
             Image.fromarray(frame).save(os.path.join(self.output, f"frame_{i:04d}.png"))
@@ -415,6 +433,7 @@ if __name__ == "__main__":
     gen = VideoGenerator(
         image_folder="suwon_budget_images",
         output_folder="torch_feedback_output",
+        use_3d=True,
         canvas_size=(2048, 2048),
         num_frames=300,
         interval=8,
