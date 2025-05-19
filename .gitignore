@@ -4,6 +4,11 @@
 # Keep the .gitignore file
 !/.gitignore
 
-# Keep only these two scripts
+# Whitelist core Python modules
+!/utils.py
+!/feedback.py
+!/spawner.py
+!/connector.py
+!/generator.py
 !/Suwon_GridProcess.py
 !/Suwon_Image_Crawl.py 
