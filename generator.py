@@ -50,10 +50,10 @@ def main(
     base_canvas = bg_tensor.view(1, 3, 1, 1).repeat(1, 1, *canvas_size).to(DEVICE)
     
     # Zoom out parameters
-    zoom_start_frame = 60
-    zoom_end_frame = 100
+    zoom_start_frame = 150
+    zoom_end_frame = 280
     initial_zoom_factor = 2.0  # Start zoomed out
-    max_zoom_factor = 4.0      # End even more zoomed out
+    max_zoom_factor = 6.0      # End even more zoomed out
     
     for i in range(num_frames):
         # Calculate zoom factor for current frame

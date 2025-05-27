@@ -12,7 +12,7 @@ class ImageSpawner:
         self,
         image_paths: List[str],
         canvas_size: Tuple[int, int],
-        scale_range: Tuple[float, float] = (0.2, 0.8),
+        scale_range: Tuple[float, float] = (0.3, 1.4),
         fade_range: Tuple[float, float] = (0.03, 0.12),
         pixelate_size: Union[int, Tuple[int, int]] = None
     ):
