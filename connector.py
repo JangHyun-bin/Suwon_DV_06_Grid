@@ -51,15 +51,10 @@ class LineConnector:
             is_high = p1 in self.highlight_points or p2 in self.highlight_points
             line_color = self.highlight_color if is_high else self.color
             line_width = self.width + 1 if is_high else self.width
-            if random.choice([True, False]):
-                mid = (p2[0], p1[1])
-            else:
-                mid = (p1[0], p2[1])
+            # fixed midpoint for consistent line segments
+            mid = (p2[0], p1[1])
             draw.line([p1, mid], fill=line_color, width=line_width)
             draw.line([mid, p2], fill=line_color, width=line_width)
-            if random.random() < 0.7:
-                r = max(1, line_width//2)
-                draw.ellipse([mid[0]-r, mid[1]-r, mid[0]+r, mid[1]+r], fill=line_color)
         for x, y in centers:
             is_high = (x, y) in self.highlight_points
             r = self.width*2 if is_high else self.width

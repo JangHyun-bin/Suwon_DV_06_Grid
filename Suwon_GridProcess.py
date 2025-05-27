@@ -26,9 +26,9 @@ if __name__ == "__main__":
         image_folder=os.path.join(script_dir, "suwon_budget_images"),
         output_folder=images_folder,
         canvas_size=(2048, 2048),
-        num_frames=300,
+        num_frames=500,
         interval=16,
-        per_spawn=100,
+        per_spawn=250,
         fade_range=(0.03, 0.12),
         visual_style="modern_grid",
         enable_effects=True,
@@ -42,8 +42,7 @@ if __name__ == "__main__":
     print("\n=== 2D Image Generation Complete! ===")
     print(f"Generated images are saved in: {images_folder}")
     
-    # ─── Temporarily disabled for testing ─────────────────────────────────
-    """
+
     # ─── Step 3: Generate heightmap image from keyword frequencies CSV ───
     csv_images_folder = os.path.join(script_dir, f"csv_images_{timestamp}")
     os.makedirs(csv_images_folder, exist_ok=True)
@@ -118,4 +117,3 @@ if __name__ == "__main__":
         )
     else:
         print("No CSV-driven meshes were created, cannot launch viewer.")
-    """

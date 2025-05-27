@@ -16,7 +16,7 @@ def main(
     image_folder: str,
     output_folder: str,
     canvas_size: Tuple[int, int] = (2048, 2048),
-    num_frames: int = 300,
+    num_frames: int = 500,
     interval: int = 8,
     per_spawn: int = 60,
     fade_range=(0.03, 0.12),

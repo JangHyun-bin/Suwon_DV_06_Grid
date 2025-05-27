@@ -62,8 +62,9 @@ class ImageSpawner:
         offset_x = (self.extended_w - self.canvas_w) // 2
         offset_y = (self.extended_h - self.canvas_h) // 2
         
-        max_x = self.extended_w - new_w
-        max_y = self.extended_h - new_h
+        # ensure non-negative range for spawning coordinates
+        max_x = max(self.extended_w - new_w, 0)
+        max_y = max(self.extended_h - new_h, 0)
         x = random.randint(0, max_x) - offset_x
         y = random.randint(0, max_y) - offset_y
         
