@@ -8,8 +8,8 @@ class TorchFeedback:
         self.canvas_size = size
         self.enable_effects = enable_effects
         self.frame_count = 0
-        self.vignette_strength = 0.3
-        self.noise_amount = 0.6
+        self.vignette_strength = 0.15
+        self.noise_amount = 0.0
         h, w = size
         y, x = torch.meshgrid(
             torch.linspace(-1, 1, h),
@@ -17,7 +17,7 @@ class TorchFeedback:
         )
         self.vignette = (x.pow(2) + y.pow(2)).sqrt().pow(0.7)
         self.vignette = self.vignette.clamp(0, 1).view(1, 1, h, w)
-        self.feedback_decay = 0.9
+        self.feedback_decay = 0.95
         self.accumulator = torch.zeros(1, 3, h, w, device=DEVICE)
 
     def apply(self, canvas: torch.Tensor) -> torch.Tensor:
@@ -30,5 +30,8 @@ class TorchFeedback:
         if self.noise_amount > 0:
             noise = torch.randn_like(out) * self.noise_amount
             out = (out + noise).clamp(0, 1)
-        self.accumulator = self.accumulator * self.feedback_decay + out * (1 - self.feedback_decay)
-        return self.accumulator 
+        
+        feedback_strength = 0.05
+        self.accumulator = self.accumulator * self.feedback_decay + out * feedback_strength
+        
+        return out * 0.95 + self.accumulator * 0.05 
